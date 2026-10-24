@@ -1,5 +1,5 @@
 /* 小柚陪学 - 离线缓存 */
-const CACHE = 'xiaotay-v22';
+const CACHE = 'xiaotay-v23';
 const ASSETS = [
   './',
   './index.html',

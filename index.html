@@ -1077,18 +1077,19 @@ function tryImg(url) {
     im.src = url;
   });
 }
+/* 先试 webp，没有才退到 png。
+   两个并行会白白把整张 png 也下下来（几 MB），手机上是肉眼可见的慢。 */
+function tryPair(base) {
+  return tryImg(base + '.webp').then(u => u || tryImg(base + '.png'));
+}
 function probeGroup(mood) {
   const base = 'stickers/' + mood + '/';
   const jobs = [];
-  for (let i = 1; i <= MAX_PER_GROUP; i++) {
-    jobs.push(Promise.all([tryImg(base + i + '.webp'), tryImg(base + i + '.png')])
-      .then(r => r[0] || r[1]));
-  }
+  for (let i = 1; i <= MAX_PER_GROUP; i++) jobs.push(tryPair(base + i));
   return Promise.all(jobs).then(list => {
     const ok = list.filter(Boolean);
     if (ok.length) return ok;
-    return Promise.all([tryImg('stickers/' + mood + '.webp'), tryImg('stickers/' + mood + '.png')])
-      .then(r => { const u = r[0] || r[1]; return u ? [u] : []; });
+    return tryPair('stickers/' + mood).then(u => (u ? [u] : []));
   });
 }
 function loadGroup(mood) {

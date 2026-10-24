@@ -1028,10 +1028,46 @@ function examLeft() { return dayDiff(S.examDate, todayStr()); }
 /* ---------- 表情 ---------- */
 /* ---------- 表情包组 ---------- */
 const MOODS = ['normal', 'happy', 'excited', 'sleepy', 'sad', 'shy', 'focus', 'hello'];
-const MAX_PER_GROUP = 16;
+const MAX_PER_GROUP = 8;
+const GKEY = 'xiaotay.groups.v1';
 const groupCache = {}, groupLoading = {};
 let moodToken = 0;
-const pickCur = {}, pickAt = {};
+const pickCur = {};
+
+/* 上次探测到的组存起来，下次打开不必再发一轮探测请求 */
+function restoreGroups() {
+  try {
+    const raw = localStorage.getItem(GKEY);
+    if (!raw) return false;
+    const map = JSON.parse(raw) || {};
+    let any = false;
+    MOODS.forEach(m => {
+      const list = map[m];
+      if (Array.isArray(list) && list.length) { groupCache[m] = list; any = true; }
+    });
+    return any;
+  } catch (e) { return false; }
+}
+function saveGroups() {
+  try {
+    const map = {};
+    Object.keys(groupCache).forEach(m => {
+      if (groupCache[m] && groupCache[m].length) map[m] = groupCache[m];
+    });
+    localStorage.setItem(GKEY, JSON.stringify(map));
+  } catch (e) {}
+}
+/* 预先加载并解码，点下去时才不会"白一下" */
+function warmGroup(list) {
+  (list || []).forEach(u => {
+    const im = new Image();
+    im.src = u;
+    if (im.decode) im.decode().catch(() => {});
+  });
+}
+function warmAll() {
+  MOODS.forEach(m => { loadGroup(m).then(warmGroup).catch(() => {}); });
+}
 
 function tryImg(url) {
   return new Promise(res => {
@@ -1056,24 +1092,33 @@ function probeGroup(mood) {
   });
 }
 function loadGroup(mood) {
+  if (groupCache[mood] && groupCache[mood].length) return Promise.resolve(groupCache[mood]);
   if (!groupLoading[mood]) {
-    groupLoading[mood] = probeGroup(mood).then(list => { groupCache[mood] = list; return list; });
+    groupLoading[mood] = probeGroup(mood).then(list => {
+      groupCache[mood] = list;
+      saveGroups();
+      return list;
+    });
   }
   return groupLoading[mood];
 }
-function pickFrom(mood, list) {
+function pickFrom(mood, list, fresh) {
   if (!list || !list.length) return null;
-  if (list.length === 1) return list[0];
-  const now = Date.now();
-  if (pickCur[mood] && now - pickAt[mood] < 2500 && list.indexOf(pickCur[mood]) >= 0) return pickCur[mood];
-  let u = list[Math.floor(Math.random() * list.length)], guard = 0;
-  while (u === pickCur[mood] && guard++ < 10) u = list[Math.floor(Math.random() * list.length)];
-  pickCur[mood] = u; pickAt[mood] = now;
+  if (list.length === 1) { pickCur[mood] = list[0]; return list[0]; }
+  const prev = pickCur[mood];
+  /* 不是"要换一张"时沿用当前这张，避免无关的重绘把表情跳来跳去 */
+  if (!fresh && prev && list.indexOf(prev) >= 0) return prev;
+  let u = prev, guard = 0;
+  while (u === prev && guard++ < 30) u = list[Math.floor(Math.random() * list.length)];
+  pickCur[mood] = u;
   return u;
 }
-function paintWith(list, mood) {
-  const url = pickFrom(mood, list);
+function paintWith(list, mood, fresh) {
+  const url = pickFrom(mood, list, fresh);
   if (!url) return;
+  if (mood === 'normal' || mood === 'sleepy') {
+    try { localStorage.setItem('xiaotay.lastImg', url); } catch (e) {}
+  }
   $$('.maid-wrap').forEach(w => {
     const cur = w.querySelector('img');
     if (!cur || cur.getAttribute('src') !== url) {
@@ -1088,22 +1133,22 @@ function fallbackSvg() {
     w.innerHTML = MAID_SVG;
   });
 }
-function paintChar(mood, token) {
+function paintChar(mood, token, fresh) {
   loadGroup(mood).then(list => {
     if (token !== moodToken) return;
-    if (list.length) return paintWith(list, mood);
+    if (list.length) return paintWith(list, mood, fresh);
     if (mood === 'normal') return fallbackSvg();
     loadGroup('normal').then(back => {
       if (token !== moodToken) return;
-      if (back.length) paintWith(back, mood); else fallbackSvg();
+      if (back.length) paintWith(back, mood, fresh); else fallbackSvg();
     });
   });
 }
-function setMood(mood) {
+function setMood(mood, fresh) {
   curMood = mood;
   moodToken++;
   $$('.maid-wrap').forEach(w => { w.className = 'maid-wrap mood-' + mood; });
-  paintChar(mood, moodToken);
+  paintChar(mood, moodToken, !!fresh);
 }
 
 /* 表情是"这次打开"期间的状态，不写进存储：
@@ -1114,9 +1159,15 @@ function baseMood() {
   return (h >= 22 || h < 6) ? 'sleepy' : 'normal';
 }
 function moodNow() { return sessMood || baseMood(); }
-function injectMaid() {
+/* 首帧先把上次那张图放上去（浏览器有缓存，等于瞬间），
+   没有记录就留空等探测结果，避免先闪一下旧插画 */
+function paintInstant() {
+  let url = '';
+  try { url = localStorage.getItem('xiaotay.lastImg') || ''; } catch (e) {}
+  if (!url) return;
   $$('.maid-wrap').forEach(w => {
-    if (!w.querySelector('svg') && !w.querySelector('img')) w.innerHTML = MAID_SVG;
+    w.innerHTML = '<img class="sticker-img" src="' + url + '" alt="">';
+    w.classList.add('is-sticker');
   });
 }
 function nameOf() { return S.nickname && S.nickname.trim() ? S.nickname.trim() : '你'; }
@@ -1319,15 +1370,14 @@ function renderLog() {
 }
 
 let moodHoldUntil = 0, moodTimer = 0;
-function holdMood(m, ms) {
+function holdMood(m, ms, fresh) {
   moodHoldUntil = Date.now() + ms;
-  setMood(m);
+  setMood(m, fresh);
   clearTimeout(moodTimer);
   moodTimer = setTimeout(() => { if (Date.now() >= moodHoldUntil) setMood(moodNow()); }, ms + 60);
 }
 function renderAll() {
   rollover();
-  injectMaid();
   renderTop();
   renderHome();
   renderLog();
@@ -1346,10 +1396,11 @@ function onTask(id) {
   burst(8);
   const el = $('[data-task="' + id + '"]');
   if (el) { el.classList.add('pop'); setTimeout(() => el.classList.remove('pop'), 640); }
-  renderAll();
   const total = S.tasks.length, done = countDone();
   sessMood = (total > 0 && done >= total) ? 'excited' : 'happy';
-  holdMood(sessMood, sessMood === 'excited' ? 3200 : 1800);
+  moodHoldUntil = Date.now() + (sessMood === 'excited' ? 3200 : 1800);
+  renderAll();
+  holdMood(sessMood, sessMood === 'excited' ? 3200 : 1800, true);
   const pool = (LINES.praise && (LINES.praise[id] || LINES.praise.generic)) || ['做得好。'];
   const hh = new Date().getHours();
   if (done >= total && total > 0) {
@@ -1387,7 +1438,7 @@ function sign() {
   renderAll();
   const sb = $('#btnSign');
   if (sb) { sb.classList.remove('pop'); void sb.offsetWidth; sb.classList.add('pop'); }
-  holdMood('happy', 2200);
+  holdMood('happy', 2200, true);
   const st = streakNow();
   let sline = pick(LINES.signIn);
   if ([7, 14, 30, 60, 100, 200].indexOf(st) >= 0) sline = pick(LINES.streak).replace('{n}', st);
@@ -1629,8 +1680,9 @@ function idleLoop() {
 
 /* ---------- 启动 ---------- */
 function boot() {
+  restoreGroups();
   rollover();
-  injectMaid();
+  paintInstant();
   renderAll();
   if (S.greetedDay !== todayStr()) greet();
   else say(pick(LINES.idle));
@@ -1639,6 +1691,7 @@ function boot() {
   bind();
   setTimeout(blinkLoop, 2200);
   setTimeout(idleLoop, 60000);
+  setTimeout(warmAll, 500);
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

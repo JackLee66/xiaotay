@@ -1170,7 +1170,7 @@ function applyArt() {
 }
 
 /* ---------- 说话 ---------- */
-let bubbleTimer = null, lastLine = '';
+let lastLine = '';
 function pick(arr) {
   if (!Array.isArray(arr) || !arr.length) return '';
   let s = arr[Math.floor(Math.random() * arr.length)];
@@ -1191,10 +1191,7 @@ function say(text, opts) {
   b.innerHTML = '<span class="say-main">' + escapeHtml(head) + '</span>' +
     (meta ? '<span class="say-meta">' + escapeHtml(meta) + '</span>' : '');
   b.classList.add('show');
-  clearTimeout(bubbleTimer);
-  if (!opts.hold) bubbleTimer = setTimeout(hideBubble, 9000);
 }
-function hideBubble() { const b = $('#bubble'); if (b) b.classList.remove('show'); }
 
 /* ---------- 特效 ---------- */
 const FX_ICONS = ['💗', '✨', '⭐', '🎀', '💖', '🌟'];
